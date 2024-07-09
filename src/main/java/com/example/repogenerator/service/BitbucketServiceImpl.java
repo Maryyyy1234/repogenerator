@@ -1,47 +1,85 @@
 package com.example.repogenerator.service;
 
-import com.example.repogenerator.config.AppConfig;
+import com.example.repogenerator.config.AppProperties;
 import com.example.repogenerator.util.GitUtil;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.File;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Service
+@RequiredArgsConstructor
 public class BitbucketServiceImpl implements BitbucketService {
 
-    @Autowired
-    private RestTemplate restTemplate;
+    private static final Logger logger = LoggerFactory.getLogger(BitbucketServiceImpl.class);
 
-    @Autowired
-    private AppConfig appConfig;
+    private final RestTemplate restTemplate;
+    private final AppProperties properties;
+    private final GitUtil gitUtil;
 
-    @Override
-    public List<String> getRepositories() {
-        String url = "https://api.bitbucket.org/2.0/repositories/" + appConfig.getBitbucketUsername();
-        System.out.println("Bitbucket Username: " + appConfig.getBitbucketUsername());
-        BitbucketRepoResponse response = restTemplate.getForObject(url, BitbucketRepoResponse.class);
-        List<String> repoNames = new ArrayList<>();
-        if (response != null && response.getValues() != null) {
-            for (BitbucketRepo repo : response.getValues()) {
-                repoNames.add(repo.getSlug());
-            }
-        }
-        return repoNames;
+    private HttpHeaders createHeaders(String username, String token) {
+        String auth = username + ":" + token;
+        byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.US_ASCII));
+        String authHeader = "Basic " + new String(encodedAuth);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Authorization", authHeader);
+        return headers;
     }
 
-    @Override
+    private HttpHeaders createHeaders() {
+        return createHeaders(properties.getBitbucketUsername(), properties.getBitbucketToken());
+    }
+
+    public List<String> getRepositories() {
+        String url = "https://api.bitbucket.org/2.0/repositories/" + properties.getWorkSpace();
+        logger.info("Fetching repositories from: {}", url);
+        HttpHeaders headers = createHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+        ResponseEntity<BitbucketRepoResponse> response = restTemplate.exchange(url, HttpMethod.GET, entity, BitbucketRepoResponse.class);
+        if (response.getBody() != null && response.getBody().getValues() != null) {
+            logger.info("Repositories fetched successfully.");
+            return Stream.of(response.getBody().getValues())
+                    .map(BitbucketRepo::getName)
+                    .collect(Collectors.toList());
+        }
+
+        logger.warn("Response body or values are null.");
+        return List.of();
+    }
+
     public void updateLocalRepo(String repoName) {
-        String repoUrl = "https://bitbucket.org/" + appConfig.getBitbucketUsername() + "/" + repoName + ".git";
-        File repoDir = new File("local/" + repoName);
+        String repoUrl = "https://bitbucket.org/" + properties.getWorkSpace() + "/" + repoName + ".git";
+        File repoDir = new File(properties.getLocalRepoPath(), repoName);
+
         if (repoDir.exists()) {
-            GitUtil.pull(repoDir);
+            logger.info("Updating existing repository: {}", repoName);
+            try (Git git = Git.open(repoDir)) {
+                git.checkout().setName("master").call();
+                git.pull()
+                        .setCredentialsProvider(new UsernamePasswordCredentialsProvider(properties.getBitbucketUsername(), properties.getBitbucketToken()))
+                        .call();
+
+                gitUtil.updateBranches(repoDir,properties.getBitbucketUsername(),properties.getGitlabToken());
+            } catch (Exception e) {
+                logger.error("Error updating repository", e);
+            }
         } else {
-            GitUtil.clone(repoUrl, repoDir);
+            logger.info("Cloning new repository: {}", repoName);
+            gitUtil.cloneRepository(repoUrl, repoDir,properties.getBitbucketUsername(),properties.getBitbucketToken());
         }
     }
 
@@ -53,88 +91,14 @@ public class BitbucketServiceImpl implements BitbucketService {
         }
     }
 
-    @Override
-    public void updateTargetRepo(String repoName) {
-        String repoUrl = "https://bitbucket.org/" + appConfig.getBitbucketUsername() + "/" + repoName + ".git";
-        File repoDir = new File("local/" + repoName);
-        if (!repoDir.exists()) {
-            createBitbucketRepo(repoName);
-            GitUtil.clone(repoUrl, repoDir);
-        }
-        GitUtil.push(repoDir, repoUrl);
-    }
-
-    @Override
-    public void syncTargetRepos() {
-        File localRepos = new File("local");
-        for (File repo : localRepos.listFiles()) {
-            if (repo.isDirectory()) {
-                updateTargetRepo(repo.getName());
-            }
-        }
-    }
-
-    private void createBitbucketRepo(String repoName) {
-        String url = "https://api.bitbucket.org/2.0/repositories/" + appConfig.getBitbucketUsername() + "/" + repoName;
-        BitbucketCreateRepoRequest request = new BitbucketCreateRepoRequest(repoName);
-        restTemplate.postForObject(url, request, String.class);
-    }
-
-    private static class BitbucketRepoResponse {
-        private BitbucketRepo[] values;
-
-        public BitbucketRepo[] getValues() {
-            return values;
-        }
-
-        public void setValues(BitbucketRepo[] values) {
-            this.values = values;
-        }
-    }
-
-    private static class BitbucketRepo {
+    @Data
+    public static class BitbucketRepo {
         private String slug;
-
-        public String getSlug() {
-            return slug;
-        }
-
-        public void setSlug(String slug) {
-            this.slug = slug;
-        }
+        private String name;
     }
 
-    private static class BitbucketCreateRepoRequest {
-        private String scm = "git";
-        private String name;
-        private boolean is_private = true;
-
-        public BitbucketCreateRepoRequest(String name) {
-            this.name = name;
-        }
-
-        public String getScm() {
-            return scm;
-        }
-
-        public void setScm(String scm) {
-            this.scm = scm;
-        }
-
-        public String getName() {
-            return name;
-        }
-
-        public void setName(String name) {
-            this.name = name;
-        }
-
-        public boolean isIs_private() {
-            return is_private;
-        }
-
-        public void setIs_private(boolean is_private) {
-            this.is_private = is_private;
-        }
+    @Data
+    public static class BitbucketRepoResponse {
+        private BitbucketRepo[] values;
     }
 }
