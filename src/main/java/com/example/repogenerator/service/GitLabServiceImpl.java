@@ -54,7 +54,7 @@ public class GitLabServiceImpl implements GitLabService {
         if (localRepos.exists() && localRepos.isDirectory()) {
             for (File repo : localRepos.listFiles()) {
                 if (repo.isDirectory()) {
-                    updateTargetRepo(repo.getName(), GitSource.GITLAB);
+                    updateTargetRepo(repo.getName());
                 }
             }
         } else {
@@ -62,13 +62,18 @@ public class GitLabServiceImpl implements GitLabService {
         }
     }
 
+
     @Override
-    public void updateTargetRepo(String repoName, GitSource source) {
+    public void updateTargetRepo(String repoName) {
         String repoUrl;
-        if (source == GitSource.GITLAB) {
+        GitSource source;
+
+        if (isGitLabRepo(repoName)) {
             repoUrl = "https://gitlab.com/" + appProperties.getGitlabUsername() + "/" + repoName + ".git";
+            source = GitSource.GITLAB;
         } else {
             repoUrl = "https://bitbucket.org/" + appProperties.getBitbucketUsername() + "/" + repoName + ".git";
+            source = GitSource.BITBUCKET;
         }
 
         File repoDir = new File(appProperties.getLocalRepoPath(), repoName);
@@ -92,6 +97,12 @@ public class GitLabServiceImpl implements GitLabService {
             logger.error("Error updating or creating repository: {}", repoName, e);
         }
     }
+
+    private boolean isGitLabRepo(String repoName) {
+        // Implement logic to determine if a repository belongs to GitLab
+        return true; // Placeholder logic, replace with actual implementation
+    }
+
 
     private boolean isRepositoryExistsInGitLab(String repoName, GitSource source) {
         List<String> repos = getRepositories();
