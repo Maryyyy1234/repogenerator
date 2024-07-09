@@ -1,6 +1,7 @@
 package com.example.repogenerator.service;
 
 import com.example.repogenerator.config.AppProperties;
+import com.example.repogenerator.model.GitSource;
 import com.example.repogenerator.util.GitUtil;
 import lombok.Data;
 import org.slf4j.Logger;
@@ -10,10 +11,8 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriUtils;
 
 import java.io.File;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -48,13 +47,14 @@ public class GitLabServiceImpl implements GitLabService {
         return repoNames;
     }
 
+
     @Override
     public void syncTargetRepos() {
         File localRepos = new File(appProperties.getLocalRepoPath());
         if (localRepos.exists() && localRepos.isDirectory()) {
             for (File repo : localRepos.listFiles()) {
                 if (repo.isDirectory()) {
-                    updateTargetRepo(repo.getName());
+                    updateTargetRepo(repo.getName(), GitSource.GITLAB);
                 }
             }
         } else {
@@ -63,29 +63,37 @@ public class GitLabServiceImpl implements GitLabService {
     }
 
     @Override
-    public void updateTargetRepo(String repoName) {
-        String repoUrl = "https://gitlab.com/" + appProperties.getGitlabUsername() + "/" + repoName + ".git";
+    public void updateTargetRepo(String repoName, GitSource source) {
+        String repoUrl;
+        if (source == GitSource.GITLAB) {
+            repoUrl = "https://gitlab.com/" + appProperties.getGitlabUsername() + "/" + repoName + ".git";
+        } else {
+            repoUrl = "https://bitbucket.org/" + appProperties.getBitbucketUsername() + "/" + repoName + ".git";
+        }
+
         File repoDir = new File(appProperties.getLocalRepoPath(), repoName);
+
         if (!repoDir.exists()) {
             logger.warn("Local repository not found: {}", repoName);
             return;
         }
 
         try {
-            if (isRepositoryExistsInGitLab(repoName)) {
-                updateGitLabRepo(repoName);
+            if (isRepositoryExistsInGitLab(repoName, source)) {
+                logger.warn("Repository {} already exists in {}. Updating instead.", repoName, source);
+                GitUtil.pushAllBranches(repoDir, repoUrl, appProperties.getGitlabUsername(), appProperties.getGitlabToken());
+                logger.info("Successfully pushed all branches of repository to {}: {}", source, repoName);
             } else {
                 createGitLabRepo(repoName);
+                GitUtil.pushAllBranches(repoDir, repoUrl, appProperties.getGitlabUsername(), appProperties.getGitlabToken());
+                logger.info("Successfully created and pushed all branches of repository to {}: {}", source, repoName);
             }
-            GitUtil.updateBranches(repoDir, appProperties.getGitlabUsername(), appProperties.getGitlabToken());
-            GitUtil.pushAllBranches(repoDir, repoUrl, appProperties.getGitlabUsername(), appProperties.getGitlabToken());
-            logger.info("Successfully pushed all branches of repository to GitLab: {}", repoName);
         } catch (Exception e) {
             logger.error("Error updating or creating repository: {}", repoName, e);
         }
     }
 
-    private boolean isRepositoryExistsInGitLab(String repoName) {
+    private boolean isRepositoryExistsInGitLab(String repoName, GitSource source) {
         List<String> repos = getRepositories();
         return repos.contains(repoName);
     }
@@ -103,60 +111,12 @@ public class GitLabServiceImpl implements GitLabService {
         } catch (HttpClientErrorException.BadRequest ex) {
             if (ex.getStatusCode().equals(HttpStatus.BAD_REQUEST) && ex.getResponseBodyAsString().contains("has already been taken")) {
                 logger.warn("Repository {} already exists, updating instead.", repoName);
-                updateGitLabRepo(repoName);
             } else {
                 logger.error("Error creating repository: {}", repoName, ex);
             }
         } catch (Exception e) {
             logger.error("Error creating repository: {}", repoName, e);
         }
-    }
-
-    private void updateGitLabRepo(String repoName) {
-        String projectId = getProjectId(repoName);
-        if (projectId == null) {
-            logger.warn("Project {} not found in GitLab", repoName);
-            return;
-        }
-
-        String url = "https://gitlab.com/api/v4/projects/" + projectId;
-        GitLabCreateRepoRequest request = new GitLabCreateRepoRequest(repoName, appProperties.getGitlabUsername());
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("PRIVATE-TOKEN", appProperties.getGitlabToken());
-        HttpEntity<GitLabCreateRepoRequest> entity = new HttpEntity<>(request, headers);
-
-        try {
-            restTemplate.exchange(url, HttpMethod.PUT, entity, String.class);
-            logger.info("Successfully updated repository in GitLab: {}", repoName);
-        } catch (Exception e) {
-            logger.error("Error updating repository: {}", repoName, e);
-        }
-    }
-
-    private String getProjectId(String repoName) {
-        String url = "https://gitlab.com/api/v4/projects";
-        String encodedRepoName = encodeRepoName(repoName);
-        String requestUrl = url + "?search=" + encodedRepoName;
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("PRIVATE-TOKEN", appProperties.getGitlabToken());
-        HttpEntity<String> entity = new HttpEntity<>(headers);
-
-        try {
-            ResponseEntity<GitLabRepoResponse[]> response = restTemplate.exchange(requestUrl, HttpMethod.GET, entity, GitLabRepoResponse[].class);
-            if (response.getBody() != null && response.getBody().length > 0) {
-                return String.valueOf(response.getBody()[0].getId());
-            } else {
-                logger.warn("Project {} not found in GitLab", repoName);
-                return null;
-            }
-        } catch (Exception e) {
-            logger.error("Error fetching project ID from GitLab: {}", repoName, e);
-            return null;
-        }
-    }
-
-    private String encodeRepoName(String repoName) {
-        return UriUtils.encodePath(repoName, StandardCharsets.UTF_8.toString());
     }
 
     @Data
@@ -168,7 +128,7 @@ public class GitLabServiceImpl implements GitLabService {
         public GitLabCreateRepoRequest(String name, String path) {
             this.name = name;
             this.path = path;
-            this.visibility = "private"; // Ensure it's set to "private" explicitly
+            this.visibility = "private";
         }
     }
 

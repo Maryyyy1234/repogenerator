@@ -1,6 +1,8 @@
 package com.example.repogenerator.service;
 
+import com.example.repogenerator.model.GitSource;
+
 public interface GitLabService extends GitService {
-    void updateTargetRepo(String repoName);
+    public void updateTargetRepo(String repoName, GitSource source);
     void syncTargetRepos();
 }
