@@ -12,6 +12,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import javax.servlet.http.HttpServletRequest;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -31,7 +32,9 @@ public class BitbucketServiceImpl implements BitbucketService {
     private final GitUtil gitUtil;
 
     private HttpHeaders createHeaders(String username, String token) {
+
         String auth = username + ":" + token;
+
         byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.US_ASCII));
         String authHeader = "Basic " + new String(encodedAuth);
         HttpHeaders headers = new HttpHeaders();
@@ -73,7 +76,7 @@ public class BitbucketServiceImpl implements BitbucketService {
                         .setCredentialsProvider(new UsernamePasswordCredentialsProvider(properties.getBitbucketUsername(), properties.getBitbucketToken()))
                         .call();
 
-                gitUtil.updateBranches(repoDir,properties.getBitbucketUsername(),properties.getGitlabToken());
+                gitUtil.updateBranches(repoDir,properties.getBitbucketUsername(),properties.getBitbucketToken());
             } catch (Exception e) {
                 logger.error("Error updating repository", e);
             }
